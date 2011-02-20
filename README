@@ -1,0 +1,12 @@
+This is a CELL BE port of Kevin Beason's smallpt code.
+This fully work on the SPEs processing 4 rays at a time.
+
+To make the code:
+spu-gcc -lm -Wall -O3 forwardFloat-spu.c -o forwardFloatSPU
+gcc -lspe2 -pthread -Wall -m64 smallpt-ppu.c -o smallptPPU
+
+then use smallptPPU [number of samples] [number of spus]
+
+ex: smallptPPU 48 6
+
+This will produce a file image.ppm with 48 samples in 6 SPEs.
