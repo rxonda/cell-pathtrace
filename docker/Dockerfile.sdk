@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1.7
+# The simulator image supplies the matching Fedora 9 libspe2 runtime.
+FROM cell-pathtrace:systemsim-3.1 AS guest-lib
+COPY CentOS-Vault.repo /etc/yum.repos.d/CentOS-Vault.repo
+RUN find /etc/yum.repos.d -name 'CentOS-*.repo' ! -name 'CentOS-Vault.repo' -delete \
+    && yum install -y e2fsprogs \
+    && yum clean all
+RUN mkdir /extracted \
+    && debugfs -R 'dump /usr/lib64/libspe2.so.2.2.80 /extracted/libspe2.so.2.2.80' \
+       /opt/ibm/systemsim-cell/images/cell/sysroot_disk \
+    && test -s /extracted/libspe2.so.2.2.80
+
+FROM cell-pathtrace:systemsim-3.1
+COPY CentOS-Vault.repo /etc/yum.repos.d/CentOS-Vault.repo
+RUN find /etc/yum.repos.d -name 'CentOS-*.repo' ! -name 'CentOS-Vault.repo' -delete \
+    && yum install -y glibc.i686 libstdc++.i686 expat.i686 make file cpio \
+    && yum clean all
+
+# These historical RPMs install only inside this image. The bind mount keeps
+# the downloaded archives out of the resulting image layers.
+RUN --mount=type=bind,from=cell_sdk_rpms,source=.,target=/rpms,ro \
+    rpm -ivh --nodeps --noscripts \
+      /rpms/ppu-binutils-2.18.50-21.i686.rpm \
+      /rpms/ppu-gcc-4.1.1-166.i686.rpm \
+      /rpms/spu-binutils-2.18.50-21.i686.rpm \
+      /rpms/spu-gcc-4.1.1-166.i686.rpm \
+      /rpms/spu-newlib-1.16.0-17.i686.rpm \
+      /rpms/cell-libs-cross-3.1-1.noarch.rpm \
+      /rpms/cell-libs-cross-devel-3.1-1.noarch.rpm \
+      /rpms/simdmath-cross-devel-3.1-1.noarch.rpm \
+    && mkdir -p /opt/cell/sysroot \
+    && cd /opt/cell/sysroot \
+    && for package in \
+      glibc-2.8-3.ppc64.rpm \
+      glibc-devel-2.8-3.ppc64.rpm \
+      glibc-headers-2.8-3.ppc.rpm \
+      kernel-headers-2.6.25-14.fc9.ppc.rpm; do \
+        rpm2cpio "/rpms/$package" | cpio -idm --quiet; \
+      done \
+    && tar -xOzf /rpms/libspe2-2.2.80-132.tar.gz libspe2-2.2.80/libspe2.h \
+       > /opt/cell/sysroot/usr/include/libspe2.h \
+    && tar -xOzf /rpms/libspe2-2.2.80-132.tar.gz libspe2-2.2.80/libspe2-types.h \
+       > /opt/cell/sysroot/usr/include/libspe2-types.h \
+    && tar -xOzf /rpms/libspe2-2.2.80-132.tar.gz libspe2-2.2.80/spebase/cbea_map.h \
+       > /opt/cell/sysroot/usr/include/cbea_map.h
+
+COPY --from=guest-lib /extracted/libspe2.so.2.2.80 /opt/cell/sysroot/usr/lib64/libspe2.so.2.2.80
+RUN cd /opt/cell/sysroot/usr/lib64 \
+    && ln -s libspe2.so.2.2.80 libspe2.so.2 \
+    && ln -s libspe2.so.2.2.80 libspe2.so
+
+ENV PATH=/opt/cell/toolchain/bin:$PATH
+WORKDIR /sim
+CMD ["/bin/bash"]

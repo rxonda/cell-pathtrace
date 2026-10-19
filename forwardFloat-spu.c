@@ -13,6 +13,7 @@
 #include <math.h>   // smallpt, a Path Tracer by Kevin Beason, 2008
 #include <stdlib.h> // Make : g++ -O3 -fopenmp smallpt.cpp -o smallpt
 #include <stdio.h>  //        Remove "-fopenmp" for g++ version < 4.2
+#include "spu-rng.h"
 
 volatile unsigned int status_termination __attribute__((aligned(16)));
 
@@ -20,7 +21,8 @@ volatile unsigned int status[128/sizeof(unsigned int)] __attribute__((aligned(12
 
 typedef struct _contexto {
 	unsigned long long retorno, status_termination, status; //endereço de retorno
-	int samps, w, h, dummy[3]; //32bytes
+	unsigned long long seed;
+	int samps, w, h, dummy;
 } contexto;
 
 volatile contexto ctxt __attribute__((aligned(16)));
@@ -188,8 +190,8 @@ Vecsoa vecsoa(Vec a, Vec b, Vec c, Vec d){
 typedef struct Spheresoa_ {
 	vector float rad;
 	Vecsoa p, e, c;
-	vector int refl;
-	vector int id;
+	vector signed int refl;
+	vector signed int id;
 } Spheresoa;
 #define NUM_SPHERESOA (3)
 Spheresoa sphsoa[]={
@@ -377,29 +379,6 @@ Vecsoa soa_veccross(Vecsoa a, Vecsoa b){
 	r.z=vecsub(vecmult(a.x,b.y),vecmult(a.y,b.x));
 	return r;
 }
-Vec randomGen(unsigned short * Xi){
-	Vec r=spu_insert(erand48(Xi),r,0);
-	r=spu_insert(erand48(Xi),r,1);
-	r=spu_insert(erand48(Xi),r,2);
-	r=spu_insert(erand48(Xi),r,3);
-	return r;
-}
-/*Vec randomGen(vector float *seed, vector unsigned int *perm){
-	vector unsigned int vAdder = {0x592fa24b, 0x9e03756c, 0xf883c2da, 0x14e136b7};
-	vector unsigned int vSwiz0 = {0x01000a06, 0x00010b0e, 0x00020c08, 0x10030d0f};
-	vector float m;
-	vector unsigned int temp = (vector unsigned int)spu_splats(spu_extract((vector unsigned char)*seed,0xd));
-	m=spu_shuffle(*seed,vones,(vector unsigned char)vSwiz0);
-	*seed=spu_shuffle(*seed,*seed,(vector unsigned char)*perm);
-	*perm=spu_xor(*perm,temp);
-	m=spu_or(m,vones);
-	float* eam=(float*)&m;
-//	fprintf(stderr,"m: %f %f %f %f\n",eam[0],eam[1],eam[2],eam[3]);
-	m=spu_sub(m,vones);
-	//fprintf(stderr,"m-1: %f %f %f %f\n",eam[0],eam[1],eam[2],eam[3]);
-	*seed=spu_add(_fabsf4(*seed),_fabsf4((vector float)vAdder));
-	return m;
-}*/
 Vecsoa soa_select(Vecsoa a, Vecsoa b, vector unsigned int mask){
 	Vecsoa r;
 	r.x=spu_sel(a.x,b.x,mask);
@@ -407,7 +386,7 @@ Vecsoa soa_select(Vecsoa a, Vecsoa b, vector unsigned int mask){
 	r.z=spu_sel(a.z,b.z,mask);
 	return r;
 }
-Vec soa_intersect(Vecsoa v, Raysoa *r, vector float raio, vector int *id){
+Vec soa_intersect(Vecsoa v, Raysoa *r, vector float raio, vector signed int *id){
 	Vecsoa v1, v2, v3;
 	v1.x=spu_shuffle(v.x,vzero,vpat4);
 	v1.y=spu_shuffle(v.y,vzero,vpat4);
@@ -478,26 +457,26 @@ Vec soa_intersect(Vecsoa v, Raysoa *r, vector float raio, vector int *id){
 	vector float result4 = spu_sel(vzero,t42,mask2);
 	result4 = spu_sel(result4, t41, mask1);
 	result4 = spu_sel(result4,vzero,mask0);
-	vector int id1=spu_shuffle(*id,*id,vpat4);
-	vector int id2=spu_shuffle(id1,*id,vpat4);
-	vector int id3=spu_shuffle(id2,*id,vpat4);
+	vector signed int id1=spu_shuffle(*id,*id,vpat4);
+	vector signed int id2=spu_shuffle(id1,*id,vpat4);
+	vector signed int id3=spu_shuffle(id2,*id,vpat4);
 	
 	vector unsigned int mask6=spu_cmpabsgt(result1,vzero);
 	vector unsigned int mask5=spu_cmpgt(vinf,result1);
-	vector int negone=spu_splats(-1);
+	vector signed int negone=spu_splats(-1);
 	
 	vector float distancia1 = spu_sel(vinf,result1,spu_and(mask5,mask6));
-	vector int rid1=spu_sel(negone,*id,spu_and(mask5,mask6));
+	vector signed int rid1=spu_sel(negone,*id,spu_and(mask5,mask6));
 	
 	vector unsigned int mask8=spu_cmpabsgt(result2,vzero);
 	vector unsigned int mask7=spu_cmpgt(distancia1,result2);
 	vector float distancia2 = spu_sel(distancia1, result2, spu_and(mask7,mask8));
-	vector int rid2=spu_sel(rid1,id1,spu_and(mask7,mask8));
+	vector signed int rid2=spu_sel(rid1,id1,spu_and(mask7,mask8));
 	
 	vector unsigned int mask9=spu_cmpabsgt(result3,vzero);
 	vector unsigned int mask10=spu_cmpgt(distancia2,result3);
 	vector float distancia3=spu_sel(distancia2,result3,spu_and(mask9,mask10));
-	vector int rid3=spu_sel(rid2,id2,spu_and(mask9,mask10));
+	vector signed int rid3=spu_sel(rid2,id2,spu_and(mask9,mask10));
 	
 	vector unsigned int mask11=spu_cmpabsgt(result4,vzero);
 	vector unsigned int mask12=spu_cmpgt(distancia3,result4);
@@ -506,9 +485,9 @@ Vec soa_intersect(Vecsoa v, Raysoa *r, vector float raio, vector int *id){
 	
 	return distancia;
 }
-vector unsigned int vecsoa_intersect(Raysoa *r, vector float *t, vector int *id ){
+vector unsigned int vecsoa_intersect(Raysoa *r, vector float *t, vector signed int *id ){
 	vector float d, vt={1e20,1e20,1e20,1e20};
-	vector int aux,vid;
+	vector signed int aux,vid=spu_splats(0);
 	int i;
 	for(i=0; i<NUM_SPHERESOA; i++){
 		aux=sphsoa[i].id;
@@ -518,9 +497,41 @@ vector unsigned int vecsoa_intersect(Raysoa *r, vector float *t, vector int *id 
 		vid=spu_sel(vid,aux,mask1);
 	}
 	*t=vt;
-	*id=vid;
+	*id=spu_sel(spu_splats(0),vid,(vector unsigned int)spu_cmpgt(vinf,vt));
 	vector unsigned int retorno=spu_cmpgt(vinf,vt);
 	return retorno;
+}
+/* Sample the light sphere uniformly over the solid angle it subtends. */
+Vecsoa direct_light(Vecsoa x, Vecsoa nl, Vecsoa throughput,
+                    SpuRng *rng, vector unsigned int active) {
+	Vecsoa center=SOAPromote(spheres[8].p);
+	Vecsoa to_light=soa_vecsub(center,x);
+	Vec dist2=soa_dot(to_light,to_light);
+	Vec cos_max=_sqrtf4(_fmaxf4(vzero,vones-spu_splats(64.f)*spu_re(dist2)));
+	Vec cos_theta=vones-spu_rng_uniform(rng)*(vones-cos_max);
+	Vec sin_theta=_sqrtf4(_fmaxf4(vzero,vones-cos_theta*cos_theta));
+	Vec phi=spu_rng_uniform(rng)*spu_splats((float)(2*M_PI));
+	Vecsoa w=soa_vecnorm(to_light);
+	Vecsoa unit_x=SOAPromote(vec(1,0,0));
+	Vecsoa unit_y=SOAPromote(vec(0,1,0));
+	vector unsigned int use_y=spu_cmpabsgt(w.x,vdotone);
+	Vecsoa u=soa_vecnorm(soa_veccross(soa_select(unit_x,unit_y,use_y),w));
+	Vecsoa v=soa_veccross(w,u);
+	Vecsoa direction=soa_vecnorm(soa_vecsum(
+		soa_vecsum(soa_vecdbl(u,_cosf4(phi)*sin_theta),
+		           soa_vecdbl(v,_sinf4(phi)*sin_theta)),
+		soa_vecdbl(w,cos_theta)));
+	Vec cosine=_fmaxf4(vzero,soa_dot(nl,direction));
+	Raysoa shadow=criaRaysoa2(soa_vecsum(x,soa_vecdbl(nl,spu_splats(1e-3f))),direction);
+	Vec distance;
+	vector signed int hit_id;
+	vecsoa_intersect(&shadow,&distance,&hit_id);
+	vector unsigned int visible=spu_and(active,spu_cmpeq(hit_id,spu_splats(8)));
+	visible=spu_and(visible,spu_cmpgt(cosine,vzero));
+	Vec weight=spu_splats(2.f)*(vones-cos_max)*cosine;
+	Vecsoa contribution=soa_vecdbl(
+		soa_vecmul(throughput,SOAPromote(spheres[8].e)),weight);
+	return soa_select(SOAPromote(vzero),contribution,visible);
 }
 Vec soa_extract(Vecsoa a, int index){
 	return vec(((float*)&a.x)[index],((float*)&a.y)[index],((float*)&a.z)[index]);
@@ -532,14 +543,14 @@ Vecsoa soa_insert(Vecsoa a, Vec b, int index){
 	((float*)&r.z)[index]=VGetZ(b);
 	return r;
 }
-Vecsoa radiance(const Raysoa r_, unsigned short *Xi){
-//Vecsoa radiance(const Raysoa r_, vector float *Xi, vector unsigned char * vPerm){
+Vecsoa radiance(const Raysoa r_, SpuRng *rng){
   vector float t;                               // distance to intersection
-  vector int id;                               // id of intersected object
-  vector int depth={0,0,0,0};
+  vector signed int id;                        // id of intersected object
+  vector signed int depth={0,0,0,0};
   Vecsoa cl=SOAPromote(vec(0,0,0));   // accumulated color
   Vecsoa cf=SOAPromote(vec(1,1,1));  // accumulated reflectance
   vector unsigned int mask3={0xFFFFFFFF,0xFFFFFFFF,0xFFFFFFFF,0xFFFFFFFF};
+  vector unsigned int previous_diffuse=spu_splats(0u);
   Raysoa r=r_;
   while (1){
 	vector unsigned int aux1;
@@ -564,22 +575,26 @@ Vecsoa radiance(const Raysoa r_, unsigned short *Xi){
 	Vec p = _fmaxf4(f.x,f.y);
 	p=_fmaxf4(p,f.z);
 	
+	/* Direct sampling already accounts for light hits after a diffuse bounce. */
 	Vecsoa cl1 = soa_vecsum(cl,soa_vecmul(cf,obj.e));
-	cl=soa_select(cl,cl1,mask3); //mask3 keep the cl's values in NO HIT case!!!
+	cl=soa_select(cl,cl1,spu_and(mask3,spu_xor(previous_diffuse,0xffffffffu)));
+	mask3=spu_and(mask3,spu_cmpgt(p,vzero));
+	if(spu_extract(spu_gather(mask3),0)==0) return cl;
 	
 	depth=spu_add(depth,spu_splats(1));
 	vector unsigned int mask4=spu_cmpgt(depth,spu_splats(5));
-	vector unsigned int mask5=spu_cmpgt(p,randomGen(Xi));
-	//vector unsigned int mask5=spu_cmpgt(p,randomGen(Xi,vPerm));
+	vector unsigned int mask5=spu_splats(0xffffffffu);
+	if(spu_extract(spu_gather(spu_and(mask3,mask4)),0))
+		mask5=spu_cmpgt(p,spu_rng_uniform(rng));
 	f=soa_select(f,soa_vecdbl(f,spu_re(p)),spu_and(mask4,mask5));
 	vector unsigned int teste2=spu_and(mask4,spu_xor(mask5,0xffffffff));
 	mask3=spu_and(mask3,spu_xor(teste2,0xffffffff));
-	if(spu_extract(spu_gather(teste2),0)==0x0f) return cl1;
-	cl=soa_select(cl,cl1,mask3);
+	if(spu_extract(spu_gather(mask3),0)==0) return cl;
 	cf=soa_select(cf,soa_vecmul(cf,f),mask3);
 	
-	//Calculating REFR
-	{
+	//Calculating REFR only when an active lane needs it.
+	vector unsigned int refr_mask=spu_and(mask3,spu_cmpeq(obj.refl,REFR));
+	if(spu_extract(spu_gather(refr_mask),0)) {
 		Raysoa reflRay=criaRaysoa2(x, soa_vecsub(r.d,soa_vecdbl(n,vecdbl(soa_dot(n,r.d),2))));
 		vector unsigned int into = spu_cmpgt(soa_dot(n,nl),vzero);
 		Vec nc=spu_splats(1.f), nt=spu_splats(1.5f), nnt, ddn=soa_dot(r.d,nl), cos2t;
@@ -590,28 +605,28 @@ Vecsoa radiance(const Raysoa r_, unsigned short *Xi){
 			b=vecsum(nt,nc),
 			R0=a*a*spu_re(b*b),
 			c=vecsub(vones, spu_sel(soa_dot(tdir,n),spu_splats(-1.f)*ddn,into));
-		Vec Re=vecsum(R0,vecsub(vones,R0))*c*c*c*c*c,
+		Vec Re=R0+(vones-R0)*c*c*c*c*c,
 			Tr=vecsub(vones,Re),
 			P=vecsum(vquarter,vhalf*Re),
 			RP=Re*spu_re(P),
 			TP=Tr*spu_re(vecsub(vones,P));
-		vector unsigned int mask6=spu_cmpgt(P, randomGen(Xi));
-//		vector unsigned int mask6=spu_cmpgt(P, randomGen(Xi,vPerm));
+		vector unsigned int mask6=spu_cmpgt(P, spu_rng_uniform(rng));
 		vector unsigned int mask7=spu_cmpgt(vzero,cos2t);
-		vector unsigned int mask8=spu_cmpeq(obj.refl,REFR);
 		//mask7 e mask8 verdadeiros mantem o cf constante e muda o raio para reflRay
 		
 		Vecsoa cf1=soa_select(soa_select(soa_vecdbl(cf,TP),soa_vecdbl(cf,RP),mask6),cf,mask7);
 		Raysoa r1=criaRaysoa2(x,tdir);
 		Raysoa result=criaRaysoa2(soa_select(r1.o,reflRay.o,spu_or(mask6,mask7)), soa_select(r1.d,reflRay.d,spu_or(mask6,mask7)));
-		r=criaRaysoa2(soa_select(r.o,result.o,spu_and(mask3,mask8)),soa_select(r.d,result.d,spu_and(mask3,mask8)));
-		cf=soa_select(cf,cf1,spu_and(mask3,mask8));
+		r=criaRaysoa2(soa_select(r.o,result.o,refr_mask),soa_select(r.d,result.d,refr_mask));
+		cf=soa_select(cf,cf1,refr_mask);
 	}
 	
-	//Calculating DIFF
-	{
-		Vec r1=vecdbl(randomGen(Xi),2*M_PI), r2=randomGen(Xi), r2s=_sqrtf4(r2);
-//		Vec r1=vecdbl(randomGen(Xi,vPerm),2*M_PI), r2=randomGen(Xi,vPerm), r2s=_sqrtf4(r2);
+	//Calculating DIFF only when an active lane needs it.
+	vector unsigned int diff_mask=spu_and(mask3,spu_cmpeq(obj.refl,DIFF));
+	if(spu_extract(spu_gather(diff_mask),0)) {
+		Vecsoa safe_x=soa_select(SOAPromote(vec(50,40.8,81.6)),x,diff_mask);
+		cl=soa_vecsum(cl,direct_light(safe_x,nl,cf,rng,diff_mask));
+		Vec r1=vecdbl(spu_rng_uniform(rng),2*M_PI), r2=spu_rng_uniform(rng), r2s=_sqrtf4(r2);
 		Vecsoa w=nl,
 				u,
 				v;
@@ -622,10 +637,10 @@ Vecsoa radiance(const Raysoa r_, unsigned short *Xi){
 		v=soa_veccross(w,u);
 		Vecsoa d=soa_vecnorm(soa_vecsum(soa_vecsum(soa_vecdbl(u,_cosf4(r1)*r2s), soa_vecdbl(v, _sinf4(r1)*r2s)), soa_vecdbl(w,_sqrtf4(vecsub(vones,r2)))));
 		Raysoa raio1=criaRaysoa2(x,d);
-		vector unsigned int mask9=spu_cmpeq(obj.refl,DIFF);
-		r.o=soa_select(r.o,raio1.o,spu_and(mask3,mask9));
-		r.d=soa_select(r.d,raio1.d,spu_and(mask3,mask9));
+		r.o=soa_select(r.o,raio1.o,diff_mask);
+		r.d=soa_select(r.d,raio1.d,diff_mask);
 	}
+	previous_diffuse=diff_mask;
 	
 	//Calculating SPEC
 	{
@@ -637,7 +652,7 @@ Vecsoa radiance(const Raysoa r_, unsigned short *Xi){
 	}
 }
 
-typedef vector int Vecint;
+typedef vector signed int Vecint;
 
 Vecint vecint(int x, int y, int z){
 	Vecint r={x,y,z,0};
@@ -650,10 +665,10 @@ int main(unsigned long long spe_id, unsigned long long data_ea, unsigned long lo
 	Ray cam=criaRay(vec(50,52,295.6), vecnorm(vec(0,-0.042612,-1))); // cam pos, dir
 	int samps, w, h, x, y, sx, sy, idx=0;
 	Vec cx, cy;
-	Vecint **c_int;
+	Vecint *c_int[2];
 
 	initSpheres();
-	//loadSpheresSOA();
+	loadSpheresSOA();
 	
 	mfc_get(&ctxt, data_ea, sizeof(contexto), 0,0,0);
 	spu_writech(MFC_WrTagMask, 1);
@@ -671,6 +686,10 @@ int main(unsigned long long spe_id, unsigned long long data_ea, unsigned long lo
 
 	c_int[0]=(Vecint*)memalign(128, ctxt.w*sizeof(Vecint));
 	c_int[1]=(Vecint*)memalign(128, ctxt.w*sizeof(Vecint));
+	if (!c_int[0] || !c_int[1]) {
+		fprintf(stderr, "SPU row allocation failed\n");
+		return 1;
+	}
 	
 	Vec avgsamples=spu_re(spu_splats((float)samps));
 	
@@ -698,27 +717,21 @@ int main(unsigned long long spe_id, unsigned long long data_ea, unsigned long lo
 		spu_mfcstat(MFC_TAG_UPDATE_ALL);
 		
 		fprintf(stderr,"\rRendering (%d spp) %5.2f%%",samps*4,100.*y/(h-1));
-/*		vector unsigned int vXi = {0,y*y,0,0};
-		vector unsigned char vPerm={0x0c,0x08,0x0f,0x06,
-									0x0d,0x0b,0x01,0x03,
-									0x0e,0x05,0x07,0x00,
-									0x02,0x0a,0x04,0x09};*/
-		unsigned short Xi[3]= {0,0,y*y};
-		//unsigned short *Xi= (unsigned short*)&vXi;
 		int linha=(h-y-1)*w;
 		for (x=0; x<w; x++) {  // Loop cols
-			int i=x;
+			SpuRng rng;
+			spu_rng_seed(&rng,ctxt.seed,(uint64_t)y*w+x);
 			Vec c=vzero;
 			int s;
 			Vec r=vzero;
 			Vecsoa rsoa=SOAPromote(vzero);
 			for (s=0; s<samps; s++) {
-				vector float vrand1=randomGen(Xi);
-				vector float vrand2=randomGen(Xi);
+				vector float vrand1=spu_rng_uniform(&rng);
+				vector float vrand2=spu_rng_uniform(&rng);
 				vector float vr1=vrand1*vtwos;
-				vector float vdx=spu_sel(spu_sub(vones,_sqrtf4(spu_sub(vtwos,vr1))),_sqrtf4(vr1),spu_cmpgt(vones,vr1));
+				vector float vdx=spu_sel(spu_sub(vones,_sqrtf4(spu_sub(vtwos,vr1))),spu_sub(_sqrtf4(vr1),vones),spu_cmpgt(vones,vr1));
 				vector float vr2=vrand2*vtwos;
-				vector float vdy=spu_sel(spu_sub(vones,_sqrtf4(spu_sub(vtwos,vr2))),_sqrtf4(vr2),spu_cmpgt(vones,vr2));
+				vector float vdy=spu_sel(spu_sub(vones,_sqrtf4(spu_sub(vtwos,vr2))),spu_sub(_sqrtf4(vr2),vones),spu_cmpgt(vones,vr2));
 				vector float auxx=spu_sub(spu_mul(spu_add(spu_mul(spu_add(spu_add(vsx,vhalf),vdx),vhalf),spu_splats((float)x)),spu_re(spu_splats((float)w))),vhalf);
 				vector float auxy=spu_sub(spu_mul(spu_add(spu_mul(spu_add(spu_add(vsy,vhalf),vdy),vhalf),spu_splats((float)y)),spu_re(spu_splats((float)h))),vhalf);
 				Vecsoa soad=soa_vecsum(soa_vecsum(soa_vecdbl(SOAPromote(cx),auxx),SOAPromote(cam.d)),
@@ -726,8 +739,7 @@ int main(unsigned long long spe_id, unsigned long long data_ea, unsigned long lo
 				Raysoa raysoa;
 				raysoa.o=soa_vecsum(SOAPromote(cam.o), soa_vecdbl(soad,vfactor));
 				raysoa.d=soa_vecnorm(soad);
-				rsoa=soa_vecsum(rsoa, soa_vecdbl(radiance(raysoa, Xi),avgsamples));
-//				rsoa=soa_vecsum(rsoa, soa_vecdbl(radiance(raysoa, (vector float*)&vXi, &vPerm),avgsamples));
+				rsoa=soa_vecsum(rsoa, soa_vecdbl(radiance(raysoa, &rng),avgsamples));
 				
 			} // Camera rays are pushed ^^^^^ forward to start in interior
 			int jj=0;
@@ -745,4 +757,7 @@ int main(unsigned long long spe_id, unsigned long long data_ea, unsigned long lo
 	} while(1);
 	spu_writech(MFC_WrTagMask, 0x03);
 	spu_mfcstat(MFC_TAG_UPDATE_ALL);
+	free(c_int[0]);
+	free(c_int[1]);
+	return 0;
 }

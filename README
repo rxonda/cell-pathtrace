@@ -1,12 +1,103 @@
-This is a CELL BE port of Kevin Beason's smallpt code.
-This fully work on the SPEs processing 4 rays at a time.
+# Cell path tracer
 
-To make the code:
-spu-gcc -O3 -L. -lm forwardFloat-spu.c -o forwardFloatSPU
-gcc -lspe2 -pthread -maltivec -Wall -m64 smallpt-ppu.c -o smallptPPU
+A Cell Broadband Engine port of Kevin Beason's smallpt path tracer. The PPU
+program starts SPE workers, which trace four rays at a time with SPU SIMD
+instructions. The default output size is 640 x 480; the Docker build helper
+can override it for small simulator tests.
 
-then use smallptPPU [number of samples] [number of spus]
+This repository is a historical source snapshot. The
+checked-in `5000spp_forwardSPUSIMD_640x480.ppm` is an example image. See
+[`CODE_REVIEW.md`](CODE_REVIEW.md) for the fixes and SIMD xoshiro128++ design.
+For a tested x86_64 Docker image that provides the Cell
+cross compilers and boots Cell Linux, see
+[`EMULATION.md`](EMULATION.md).
 
-ex: smallptPPU 48 6
+## Requirements
 
-This will produce a file image.ppm with 48 samples in 6 SPEs.
+- A PowerPC Cell system with SPEs and a Cell Linux environment.
+- A PPU C compiler, `spu-gcc`, SPU SIMD math headers, `libspe2`, and pthreads.
+
+Ordinary x86 or ARM GCC cannot compile the SPU source or run the resulting
+program. The combined Docker image cross-compiles both project sources; the
+PPU and SPU builds and small test renders completed in the simulator.
+
+## Build and render in Docker
+
+Build the combined SDK and simulator image as described in
+[`EMULATION.md`](EMULATION.md), then run from this repository:
+
+```sh
+CELL_WIDTH=16 CELL_HEIGHT=12 bash docker/build-project.sh
+bash docker/run-render.sh 4 1 12345
+bash docker/test-rng.sh
+```
+
+The first command puts `forwardFloatSPU` and `smallptPPU` in `build/`. The
+second runs four samples per pixel on one SPE with seed `12345` and writes
+`build/image.ppm`. The seed argument is optional and defaults to `1`. The
+third command runs the SPU RNG known-output test in the simulator.
+The `build/` directory is ignored by Git. The render script refuses to
+overwrite an existing image; move or rename it before another run. Omit the
+width and height variables to build at the default 640 x 480 resolution.
+The simulator is slow, so use a small size for functional tests. Image
+quality still needs comparison with a high-sample scalar reference.
+The renderer now samples the light directly at diffuse surfaces, making
+low-sample previews show the room. For a less blocky preview, move the old
+`build/image.ppm`, then build at `CELL_WIDTH=64 CELL_HEIGHT=48` and run
+`bash docker/run-render.sh 16 2`. The checked-in example has 100 times as many
+pixels and 312.5 times as many samples per pixel as that preview. Producing an
+equivalent full render in the simulator is therefore a much larger job.
+
+A 64 x 48 render at 5,000 samples per pixel completed with two SPE workers and
+seed `1` in the simulator in about 14 hours 55 minutes on the tested x86_64
+host. To reproduce it in a separate ignored build directory:
+
+```sh
+CELL_BUILD_DIR=build/render-5000-64x48 CELL_WIDTH=64 CELL_HEIGHT=48 \
+  bash docker/build-project.sh
+CELL_BUILD_DIR=build/render-5000-64x48 bash docker/run-render.sh 5000 2 1
+```
+
+The result is `build/render-5000-64x48/image.ppm`. It appears smoother than
+the checked-in example, which shows grain and repeating ripples, but the two
+images have different resolutions. Downsampling the 640 x 480 example to
+64 x 48 gives a mean absolute RGB difference of 14.45; the new image remains
+systematically brighter. See [CODE_REVIEW.md](CODE_REVIEW.md) for the measured
+comparison and its limits.
+
+## Intended build and use
+
+Run from the repository directory:
+
+```sh
+spu-gcc -O3 forwardFloat-spu.c -o forwardFloatSPU -lm
+gcc -Wall -m64 -maltivec -pthread smallpt-ppu.c -o smallptPPU -lspe2
+./smallptPPU 48 6
+```
+
+On an x86_64 cross-build host, use the SDK's PPU cross compiler (`ppu-gcc`)
+instead of host `gcc`. The resulting PPU executable runs in a Cell Linux
+guest or on Cell hardware, not on the build host.
+
+The first argument requests samples per pixel; the program requires a positive
+multiple of four and traces four rays per iteration. The second argument
+is the number of SPE workers, from one to six. An optional third argument sets
+the 64-bit RNG seed. The program looks for `./forwardFloatSPU` and writes
+an ASCII PPM (`P3`) file named `image.ppm` in the current directory, replacing
+any existing file with that name.
+
+## Source layout
+
+- `smallpt-ppu.c`: PPU launcher, shared output buffer, SPE scheduling, and
+  PPM writer.
+- `forwardFloat-spu.c`: SPU SIMD ray traversal, shading, and DMA transfers.
+- `spu-rng.h`: four-lane xoshiro128++ RNG and per-pixel stream seeding.
+- `5000spp_forwardSPUSIMD_640x480.ppm`: checked-in example output.
+
+## Validation status
+
+The review fixes and RNG implementation are recorded in
+[`CODE_REVIEW.md`](CODE_REVIEW.md). The SIMD RNG passed known-output tests in
+the Cell guest, and the 5,000-sample render completed successfully.
+Rendered-image accuracy and performance have not been measured against a
+scalar reference or real Cell hardware.

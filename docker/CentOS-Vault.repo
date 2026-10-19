@@ -1,0 +1,13 @@
+[base]
+name=CentOS 6.10 base archive
+baseurl=https://vault.centos.org/6.10/os/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-6
+
+[updates]
+name=CentOS 6.10 updates archive
+baseurl=https://vault.centos.org/6.10/updates/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-6
